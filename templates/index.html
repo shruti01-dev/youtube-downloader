@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YouTube Downloader</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --card: #ffffff;
+      --ink: #152033;
+      --muted: #5d6b82;
+      --line: #e4e9f2;
+      --red: #e11d2e;
+      --red-dark: #be1524;
+      --blue: #2563eb;
+      --ok: #15803d;
+      --warn: #b45309;
+      --shadow: 0 12px 40px rgba(21, 32, 51, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(900px 280px at 0% 0%, #ffe4e6 0%, transparent 55%),
+        radial-gradient(700px 240px at 100% 0%, #dbeafe 0%, transparent 50%),
+        var(--bg);
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 22px 20px 8px;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 42px; height: 42px; border-radius: 12px;
+      background: var(--red); color: #fff; display: grid; place-items: center;
+      font-weight: 800; font-size: 18px;
+    }
+    h1 { margin: 0; font-size: 22px; }
+    .sub { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+    .layout {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 16px 20px 64px;
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+    .step {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 8px;
+    }
+    .link-hint {
+      margin: -6px 0 14px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+    .link-hint.ok { color: var(--ok); }
+    .link-hint.bad { color: var(--red); }
+    .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+    .mode {
+      border: 2px solid var(--line);
+      background: #fafbff;
+      border-radius: 14px;
+      padding: 14px 12px;
+      cursor: pointer;
+      text-align: left;
+      color: var(--ink);
+    }
+    .mode.active { border-color: #2563eb; background: #eff6ff; }
+    input:focus, select:focus { outline: 3px solid #bfdbfe; border-color: #2563eb; }
+    .mode b { display: block; font-size: 15px; margin-bottom: 4px; }
+    .mode span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+    label { display: block; font-weight: 600; margin: 0 0 8px; }
+    .row { display: flex; gap: 8px; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 13px 14px;
+      font-size: 15px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .qualities { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .q {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .q.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+    .btn {
+      border: 0;
+      border-radius: 12px;
+      padding: 14px 12px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn.primary { background: var(--red); color: #fff; grid-column: 1 / -1; }
+    .btn.primary:hover:not(:disabled) { background: var(--red-dark); }
+    .btn.primary:disabled {
+      background: #c5cdd8;
+      color: #f8fafc;
+      cursor: not-allowed;
+      opacity: 1;
+    }
+    .btn.ghost { background: #eef2f8; color: var(--ink); }
+    .btn:disabled { cursor: not-allowed; }
+    .progress {
+      margin-top: 16px;
+      padding: 14px;
+      border-radius: 14px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      display: none;
+    }
+    .progress.show { display: block; }
+    .bar { height: 10px; background: #e5eaf3; border-radius: 99px; overflow: hidden; }
+    .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--red), #fb7185); transition: width .3s; }
+    .status { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 99px;
+      margin-bottom: 8px;
+    }
+    .badge.run { background: #dbeafe; color: #1d4ed8; }
+    .badge.ok { background: #dcfce7; color: var(--ok); }
+    .badge.err { background: #fee2e2; color: var(--red); }
+    .lib-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .lib-head h2 { margin: 0; font-size: 18px; }
+    .search-row { display: grid; grid-template-columns: 1fr 200px; gap: 8px; margin-bottom: 14px; }
+    .day-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin: 18px 0 8px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--line);
+    }
+    .day-head:first-child { margin-top: 0; }
+    .day-head b { font-size: 15px; }
+    .day-head span { color: var(--muted); font-size: 12px; }
+    .empty {
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--muted);
+    }
+    .file {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      margin-bottom: 8px;
+      background: #fafbff;
+    }
+    .file strong { display: block; font-size: 14px; line-height: 1.35; word-break: break-word; }
+    .file small { color: var(--muted); }
+    .file-actions { display: flex; gap: 8px; align-items: start; }
+    .file-actions button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--blue);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 14px; }
+    .toast {
+      position: fixed; bottom: 20px; right: 20px;
+      background: var(--ink); color: #fff;
+      padding: 12px 16px; border-radius: 12px;
+      display: none; z-index: 20; max-width: 320px;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .top { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">▶</div>
+      <div>
+        <h1>YouTube Downloader</h1>
+        <p class="sub">Paste a link and download to this PC</p>
+      </div>
+    </div>
+    <button class="btn ghost" id="folder" type="button">Open folder</button>
+  </header>
+
+  <main class="layout">
+    <section class="card">
+      <p class="step">Step 1</p>
+      <div class="modes">
+        <button type="button" class="mode active" data-mode="single">
+          <b>One video</b>
+          <span>Download a single YouTube video</span>
+        </button>
+        <button type="button" class="mode" data-mode="playlist">
+          <b>Playlist</b>
+          <span>Download every video in the playlist</span>
+        </button>
+      </div>
+      <p class="link-hint" id="linkHint">Paste a link to check if it matches your selection.</p>
+
+      <p class="step">Step 2</p>
+      <label for="url">YouTube link</label>
+      <div class="row">
+        <input id="url" placeholder="Paste youtube.com or youtu.be link" />
+        <button class="btn ghost" id="paste" type="button">Paste</button>
+      </div>
+
+      <p class="step" style="margin-top:18px">Step 3</p>
+      <label>Quality</label>
+      <div class="qualities" id="qualities">
+        <button type="button" class="q on" data-q="best">Best</button>
+        <button type="button" class="q" data-q="1080">1080p</button>
+        <button type="button" class="q" data-q="720">720p</button>
+        <button type="button" class="q" data-q="480">480p</button>
+        <button type="button" class="q" data-q="audio">Audio MP3</button>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary" id="go">Download now</button>
+      </div>
+
+      <div class="progress" id="progress">
+        <span class="badge run" id="badge">Working</span>
+        <div class="bar"><i id="bar"></i></div>
+        <p class="status" id="status">Starting…</p>
+      </div>
+      <p class="note">Videos save as H.264 MP4 — plays in Films &amp; TV, phone, and browser.</p>
+    </section>
+
+    <section class="card">
+      <div class="lib-head">
+        <h2 id="libTitle">Your downloads</h2>
+        <span class="status" id="libMeta"></span>
+      </div>
+      <div class="search-row">
+        <input id="search" placeholder="Search videos…" />
+        <select id="dayFilter">
+          <option value="all">All days</option>
+        </select>
+      </div>
+      <div id="files"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const CLIENT_KEY = "yt-dl-client-id";
+    const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+
+    let mode = "single";
+    let quality = "best";
+    let pollTimer = null;
+    let filesTimer = null;
+    let allFiles = [];
+    let folderPath = "";
+    let clientId = "local-pc";
+
+    function makeClientId() {
+      if (window.crypto && crypto.randomUUID) {
+        try { return crypto.randomUUID(); } catch (e) {}
+      }
+      return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === "x" ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    }
+
+    function getStoredClientId() {
+      let id = localStorage.getItem(CLIENT_KEY);
+      if (!id || !/^[a-f0-9-]{36}$/i.test(id)) {
+        id = makeClientId();
+        localStorage.setItem(CLIENT_KEY, id);
+      }
+      return id;
+    }
+
+    function apiHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      if (!isLocalHost && clientId && clientId !== "local-pc") {
+        headers["X-Client-Id"] = clientId;
+      }
+      return headers;
+    }
+
+    function fileUrl(name, download) {
+      const base = "/downloads/" + encodeURIComponent(clientId) + "/" + encodeURIComponent(name);
+      const cid = "client_id=" + encodeURIComponent(clientId);
+      return download ? base + "?download=1&" + cid : base + "?" + cid;
+    }
+
+    async function initClient() {
+      if (!isLocalHost) clientId = getStoredClientId();
+      try {
+        const res = await fetch("/api/client-id", { headers: apiHeaders() });
+        const data = await res.json();
+        if (data.ok) {
+          clientId = data.client_id || clientId;
+          if (clientId !== "local-pc") {
+            localStorage.setItem(CLIENT_KEY, clientId);
+            document.cookie = "client_id=" + clientId + "; path=/; max-age=31536000; SameSite=Lax";
+          }
+        }
+      } catch {
+        if (!isLocalHost && !clientId) clientId = getStoredClientId();
+      }
+    }
+
+    function toast(msg) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2800);
+    }
+
+    function formatSize(n) {
+      if (n > 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+      if (n > 1048576) return (n / 1048576).toFixed(1) + " MB";
+      if (n > 1024) return (n / 1024).toFixed(0) + " KB";
+      return n + " B";
+    }
+
+    function hasVideoId(url) {
+      if (/youtu\.be\//i.test(url)) return true;
+      return /[?&]v=/.test(url);
+    }
+
+    function hasPlaylistId(url) {
+      return /[?&]list=/.test(url) || /\/playlist\?/i.test(url);
+    }
+
+    function validateLinkMode(url, selectedMode) {
+      const video = hasVideoId(url);
+      const playlist = hasPlaylistId(url);
+      if (selectedMode === "single") {
+        if (!video) {
+          return {
+            ok: false,
+            error: "This link is not a single video. Select Playlist to download a playlist.",
+          };
+        }
+        return { ok: true, hint: "Single video link detected. Ready to download." };
+      }
+      if (selectedMode === "playlist") {
+        if (!playlist) {
+          return {
+            ok: false,
+            error: "This link is not a playlist. Select One video to download a single video.",
+          };
+        }
+        return { ok: true, hint: "Playlist link detected. Ready to download." };
+      }
+      return { ok: false, error: "Please select One video or Playlist." };
+    }
+
+    function updateDownloadButton() {
+      const go = document.getElementById("go");
+      if (pollTimer) return;
+      const url = document.getElementById("url").value.trim();
+      if (!url) {
+        go.disabled = true;
+        return;
+      }
+      go.disabled = !validateLinkMode(url, mode).ok;
+    }
+
+    function updateLinkHint() {
+      const url = document.getElementById("url").value.trim();
+      const hint = document.getElementById("linkHint");
+      if (!url) {
+        hint.textContent = "Paste a link to check if it matches your selection.";
+        hint.className = "link-hint";
+        updateDownloadButton();
+        return;
+      }
+      const check = validateLinkMode(url, mode);
+      if (check.ok) {
+        hint.textContent = check.hint;
+        hint.className = "link-hint ok";
+      } else {
+        hint.textContent = check.error;
+        hint.className = "link-hint bad";
+      }
+      updateDownloadButton();
+    }
+
+    document.querySelectorAll(".mode").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".mode").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        mode = btn.dataset.mode;
+        updateLinkHint();
+      });
+    });
+
+    document.querySelectorAll(".q").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".q").forEach((b) => b.classList.remove("on"));
+        btn.classList.add("on");
+        quality = btn.dataset.q;
+      });
+    });
+
+    document.getElementById("url").addEventListener("input", updateLinkHint);
+
+    document.getElementById("paste").addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        document.getElementById("url").value = text.trim();
+        updateLinkHint();
+        toast("Link pasted");
+      } catch {
+        toast("Could not read clipboard. Paste with Ctrl+V.");
+      }
+    });
+
+    function dayKey(mtime) {
+      const d = new Date((mtime || 0) * 1000);
+      if (Number.isNaN(d.getTime())) return "unknown";
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    }
+
+    function dayLabel(key) {
+      if (key === "unknown") return "Unknown date";
+      const parts = key.split("-").map(Number);
+      const date = new Date(parts[0], parts[1] - 1, parts[2]);
+      const today = new Date();
+      const todayKey = dayKey(today.getTime() / 1000);
+      const yest = new Date(today);
+      yest.setDate(today.getDate() - 1);
+      const yestKey = dayKey(yest.getTime() / 1000);
+      const nice = date.toLocaleDateString(undefined, {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+      if (key === todayKey) return "Today · " + nice;
+      if (key === yestKey) return "Yesterday · " + nice;
+      return nice;
+    }
+
+    function formatTime(mtime) {
+      const d = new Date((mtime || 0) * 1000);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    }
+
+    function syncDayFilter(files) {
+      const select = document.getElementById("dayFilter");
+      const current = select.value || "all";
+      const keys = [...new Set(files.map((f) => dayKey(f.mtime)))].sort().reverse();
+      select.replaceChildren();
+      const allOpt = document.createElement("option");
+      allOpt.value = "all";
+      allOpt.textContent = "All days";
+      select.appendChild(allOpt);
+      keys.forEach((key) => {
+        const count = files.filter((f) => dayKey(f.mtime) === key).length;
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = dayLabel(key) + " (" + count + ")";
+        select.appendChild(opt);
+      });
+      select.value = keys.includes(current) || current === "all" ? current : "all";
+    }
+
+    function renderFiles() {
+      const q = document.getElementById("search").value.trim().toLowerCase();
+      const day = document.getElementById("dayFilter").value;
+      const box = document.getElementById("files");
+      syncDayFilter(allFiles);
+      if (day !== "all") document.getElementById("dayFilter").value = day;
+      const files = allFiles.filter((f) => {
+        const matchName = f.name.toLowerCase().includes(q);
+        const matchDay = day === "all" || dayKey(f.mtime) === day;
+        return matchName && matchDay;
+      });
+      const total = allFiles.reduce((s, f) => s + (f.size || 0), 0);
+      document.getElementById("libTitle").textContent = "Your downloads (" + allFiles.length + ")";
+      document.getElementById("libMeta").textContent = total ? formatSize(total) : "";
+      box.replaceChildren();
+      if (!files.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = allFiles.length ? "No videos for this day or search." : "No videos yet. Download one and it will appear here.";
+        box.appendChild(empty);
+        return;
+      }
+      const groups = {};
+      files.forEach((f) => {
+        const key = dayKey(f.mtime);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(f);
+      });
+      Object.keys(groups).sort().reverse().forEach((key) => {
+        const items = groups[key];
+        const groupSize = items.reduce((s, f) => s + (f.size || 0), 0);
+        const head = document.createElement("div");
+        head.className = "day-head";
+        const title = document.createElement("b");
+        title.textContent = dayLabel(key);
+        const meta = document.createElement("span");
+        meta.textContent = items.length + (items.length === 1 ? " video · " : " videos · ") + formatSize(groupSize);
+        head.append(title, meta);
+        box.appendChild(head);
+        items.forEach((f) => {
+          const row = document.createElement("div");
+          row.className = "file";
+          const info = document.createElement("div");
+          const nameEl = document.createElement("strong");
+          nameEl.textContent = f.name;
+          const metaEl = document.createElement("small");
+          metaEl.textContent = formatSize(f.size) + (formatTime(f.mtime) ? " · " + formatTime(f.mtime) : "");
+          info.append(nameEl, metaEl);
+          const actions = document.createElement("div");
+          actions.className = "file-actions";
+          const actionBtn = document.createElement("button");
+          actionBtn.type = "button";
+          if (isLocalHost) {
+            actionBtn.textContent = "Open";
+            actionBtn.addEventListener("click", async () => {
+              const res = await fetch("/api/open-file", {
+                method: "POST",
+                headers: apiHeaders({ "Content-Type": "application/json" }),
+                body: JSON.stringify({ name: f.name }),
+              });
+              if (!res.ok) toast("Could not open this file. Use Open folder.");
+            });
+          } else {
+            actionBtn.textContent = "Save";
+            actionBtn.addEventListener("click", () => {
+              const link = document.createElement("a");
+              link.href = fileUrl(f.name, true);
+              link.download = f.name;
+              link.click();
+            });
+          }
+          actions.append(actionBtn);
+          row.append(info, actions);
+          box.appendChild(row);
+        });
+      });
+    }
+
+    async function refreshFiles() {
+      try {
+        const data = await fetch("/api/files", { headers: apiHeaders() }).then((r) => r.json());
+        if (!data.ok) {
+          document.getElementById("files").textContent = data.error || "Could not load files.";
+          return;
+        }
+        clientId = data.client_id || clientId;
+        const next = data.files || [];
+        const same =
+          next.length === allFiles.length &&
+          next.every((f, i) => allFiles[i] && f.name === allFiles[i].name && f.size === allFiles[i].size);
+        if (same) return;
+        allFiles = next;
+        folderPath = data.folder || folderPath;
+        renderFiles();
+      } catch {
+        document.getElementById("files").textContent = "Could not load files.";
+      }
+    }
+
+    document.getElementById("search").addEventListener("input", renderFiles);
+    document.getElementById("dayFilter").addEventListener("change", renderFiles);
+
+    document.getElementById("folder").addEventListener("click", async () => {
+      const res = await fetch("/api/open-folder", { method: "POST", headers: apiHeaders() });
+      if (!res.ok) {
+        toast("Folder: " + (folderPath || "Desktop\\download youtube video\\downloads"));
+        return;
+      }
+      toast("Folder opened in Explorer");
+    });
+
+    function setProgress(kind, message, percent) {
+      const progress = document.getElementById("progress");
+      const badge = document.getElementById("badge");
+      progress.classList.add("show");
+      badge.className = "badge " + kind;
+      badge.textContent = kind === "ok" ? "Done" : kind === "err" ? "Error" : "Working";
+      document.getElementById("status").textContent = message;
+      document.getElementById("bar").style.width = (percent || 0) + "%";
+    }
+
+    document.getElementById("go").addEventListener("click", async () => {
+      const url = document.getElementById("url").value.trim();
+      const go = document.getElementById("go");
+      if (!url) {
+        toast("Please paste a YouTube link first.");
+        document.getElementById("url").focus();
+        return;
+      }
+      const check = validateLinkMode(url, mode);
+      if (!check.ok) {
+        setProgress("err", check.error, 0);
+        toast(check.error);
+        updateLinkHint();
+        return;
+      }
+      if (pollTimer) clearInterval(pollTimer);
+      go.disabled = true;
+      go.textContent = "Downloading…";
+      setProgress("run", "Starting download…", 4);
+      const res = await fetch("/api/download", {
+        method: "POST",
+        headers: apiHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ url, mode, quality }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setProgress("err", data.error, 0);
+        go.textContent = "Download now";
+        updateLinkHint();
+        return;
+      }
+      pollTimer = setInterval(async () => {
+        try {
+          const r = await fetch("/api/status/" + data.job_id, { headers: apiHeaders() });
+          const s = await r.json();
+          if (!s.ok) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            go.textContent = "Download now";
+            setProgress("err", "Status expired. Check Your downloads on the right.", 0);
+            refreshFiles();
+            updateLinkHint();
+            return;
+          }
+          setProgress(s.status === "error" ? "err" : s.status === "done" ? "ok" : "run",
+            (s.message || "Working…") +
+              (s.total > 1 ? " (" + (s.current || 0) + "/" + s.total + ")" : "") +
+              (s.speed ? " · " + s.speed : "") +
+              (s.eta ? " · ETA " + s.eta : ""),
+            s.percent || 0);
+          if (s.status === "done" || s.status === "error") {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            go.textContent = "Download now";
+            refreshFiles();
+            updateLinkHint();
+          } else if ((s.percent || 0) >= 99) {
+            refreshFiles();
+          }
+        } catch {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          go.textContent = "Download now";
+          updateLinkHint();
+        }
+      }, 1000);
+    });
+
+    if (!isLocalHost) {
+      document.getElementById("folder").style.display = "none";
+      document.querySelector(".note").textContent =
+        "Videos save as H.264 MP4. Click Save to download to your device — plays on phone and Films & TV.";
+    }
+
+    initClient().then(() => {
+      refreshFiles();
+      filesTimer = setInterval(refreshFiles, 8000);
+      updateLinkHint();
+    });
+  </script>
+</body>
+</html>
