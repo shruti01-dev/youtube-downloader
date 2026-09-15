@@ -67,9 +67,11 @@ def cors_preflight(_path=None):
     return "", 204
 
 def h264_format(max_height=None):
-    """Prefer H.264 MP4 so videos play in Films & TV and on phones."""
+    """Prefer H.264 MP4; progressive single-file first (more reliable on cloud)."""
     h = f"[height<={max_height}]" if max_height else ""
     return (
+        f"best{h}[ext=mp4][vcodec^=avc1]/"
+        f"best{h}[ext=mp4]/"
         f"bestvideo{h}[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
         f"bestvideo{h}[vcodec^=avc1]+bestaudio/"
         f"best{h}[vcodec^=avc1]/"
@@ -125,6 +127,7 @@ class JobLogger:
         text = str(msg)
         with jobs_lock:
             job = jobs[self.job_id]
+            job["error"] = text[:300]
             if "rate-limited" in text.lower() or "try again later" in text.lower():
                 job["message"] = "YouTube rate limit. Pausing, then skipping this video…"
             elif "unavailable" in text.lower():
@@ -299,24 +302,41 @@ def base_opts(job_id, quality, mode, client_dir):
         "progress_hooks": [progress_hook(job_id)],
         "quiet": True,
         "no_warnings": True,
-        "ignoreerrors": True,
-        "restrictfilenames": False,
-        "windowsfilenames": True,
+        "ignoreerrors": mode == "playlist",
+        "noprogress": True,
+        "restrictfilenames": True,
+        "windowsfilenames": False,
         "continuedl": True,
-        "retries": 5,
-        "fragment_retries": 5,
+        "retries": 10,
+        "fragment_retries": 10,
         "keepvideo": False,
         "socket_timeout": 30,
-        "sleep_interval_requests": 1.5,
-        "sleep_interval": 2,
-        "max_sleep_interval": 6,
+        "sleep_interval_requests": 1.0,
         "logger": JobLogger(job_id),
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        },
+        # Helps when YouTube blocks default web clients on cloud IPs.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "tv_embedded", "mweb", "web"],
+            }
+        },
     }
     # Cloud: no archive, so each request actually produces a file when possible.
     if not is_cloud_host():
         opts["download_archive"] = str(client_dir / "archive.txt")
+        opts["sleep_interval"] = 2
+        opts["max_sleep_interval"] = 6
     if FFMPEG_DIR:
         opts["ffmpeg_location"] = FFMPEG_DIR
+    # Prefer system ffmpeg on Linux cloud images.
+    elif shutil.which("ffmpeg"):
+        opts["ffmpeg_location"] = str(Path(shutil.which("ffmpeg")).parent)
     if quality == "audio":
         opts["postprocessors"] = [
             {
@@ -481,6 +501,7 @@ def run_download(job_id, url, mode, quality, client_id):
         else:
             opts = base_opts(job_id, quality, "single", client_dir)
             opts["noplaylist"] = True
+            opts["ignoreerrors"] = False
             with YoutubeDL(opts) as ydl:
                 with jobs_lock:
                     jobs[job_id]["status"] = "downloading"
@@ -508,9 +529,14 @@ def run_download(job_id, url, mode, quality, client_id):
                 job["message"] = f"Finished. Saved {len(new_files)} file(s)."
             else:
                 job["status"] = "error"
-                job["message"] = (
-                    "No video file was created. Try 720p, or try again in a few minutes."
-                )
+                detail = (job.get("error") or job.get("message") or "").strip()
+                if detail and detail not in ("Downloading video…", "Starting…", "Merging / finishing file…"):
+                    job["message"] = detail[:200]
+                else:
+                    job["message"] = (
+                        "YouTube blocked this server IP or no playable format was found. "
+                        "Free cloud hosts often fail — use your PC (python app.py) for reliable downloads."
+                    )
     except Exception as exc:
         err = str(exc)
         with jobs_lock:
@@ -522,7 +548,7 @@ def run_download(job_id, url, mode, quality, client_id):
                     "Wait, then try again."
                 )
             else:
-                jobs[job_id]["message"] = "Download failed"
+                jobs[job_id]["message"] = err[:200] or "Download failed"
 
 
 def get_lan_ip():
