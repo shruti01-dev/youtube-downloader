@@ -11,7 +11,7 @@ from pathlib import Path
 
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, after_this_request, abort, jsonify, request, send_from_directory
 from yt_dlp import YoutubeDL
 
 ROOT = Path(__file__).resolve().parent
@@ -21,6 +21,8 @@ CLIENTS_DIR = DOWNLOAD_DIR / "clients"
 CLIENTS_DIR.mkdir(exist_ok=True)
 PORT = int(os.environ.get("PORT", "5050"))
 CLIENT_ID_RE = re.compile(r"^[a-f0-9-]{36}$", re.I)
+# On free cloud hosts, keep files only briefly then send to the user device.
+CLOUD_FILE_TTL_SEC = int(os.environ.get("CLOUD_FILE_TTL_SEC", "900"))
 
 FFMPEG_CANDIDATES = [
     ROOT / "tools",
@@ -98,6 +100,7 @@ def new_job(client_id):
         "ok_count": 0,
         "current": 0,
         "total": 0,
+        "new_files": [],
         "client_id": client_id,
     }
 
@@ -131,7 +134,55 @@ class JobLogger:
                 job["message"] = text[:180]
 
 
+def is_cloud_host():
+    return bool(
+        os.environ.get("RENDER")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("FLY_APP_NAME")
+        or os.environ.get("KOYEB_APP_ID")
+    )
+
+
+def safe_unlink(path):
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cleanup_cloud_files():
+    """Delete old temp videos on cloud so free disk stays free."""
+    if not is_cloud_host():
+        return
+    now = time.time()
+    roots = [CLIENTS_DIR]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                age = now - path.stat().st_mtime
+                if age >= CLOUD_FILE_TTL_SEC:
+                    safe_unlink(path)
+            except OSError:
+                continue
+
+
+def cloud_cleanup_loop():
+    while True:
+        try:
+            cleanup_cloud_files()
+        except Exception:
+            pass
+        time.sleep(120)
+
+
 def is_local_request():
+    # On cloud (Render etc.) every visitor is remote — never treat as host PC.
+    if is_cloud_host():
+        return False
     addr = (request.remote_addr or "").replace("::ffff:", "")
     if addr in ("127.0.0.1", "::1"):
         return True
@@ -353,6 +404,11 @@ def playlist_video_url(entry):
 
 def run_download(job_id, url, mode, quality, client_id):
     client_dir = client_dir_for(client_id)
+    before_names = {
+        f.name
+        for f in client_dir.iterdir()
+        if f.is_file() and is_listable_download(f.name)
+    }
     try:
         if mode == "playlist":
             list_opts = {
@@ -427,7 +483,15 @@ def run_download(job_id, url, mode, quality, client_id):
             skipped = job.get("skipped") or 0
             ok_count = job.get("ok_count") or 0
             job["message"] = f"Finished. Saved {ok_count} file(s), skipped {skipped}."
-            job["files"] = [f.name for f in client_dir.iterdir() if f.is_file() and is_listable_download(f.name)][-40:]
+            listed = [
+                f.name
+                for f in client_dir.iterdir()
+                if f.is_file() and is_listable_download(f.name)
+            ]
+            listed.sort(key=lambda n: (client_dir / n).stat().st_mtime, reverse=True)
+            job["files"] = listed[:40]
+            new_files = [n for n in listed if n not in before_names]
+            job["new_files"] = new_files or (listed[:1] if ok_count else [])
     except Exception as exc:
         err = str(exc)
         with jobs_lock:
@@ -559,7 +623,37 @@ def get_file(client_id, filename):
     if path.parent != client_dir or not path.is_file():
         abort(404)
     as_attachment = request.args.get("download") == "1"
+    delete_after = as_attachment and (
+        is_cloud_host() or request.args.get("purge") == "1"
+    )
+
+    if delete_after:
+        @after_this_request
+        def _purge(response):
+            # After the file is sent to the user's PC/phone, free server storage.
+            if response.status_code < 400:
+                safe_unlink(path)
+            return response
+
     return send_from_directory(client_dir, safe_name, as_attachment=as_attachment)
+
+
+@app.post("/api/purge-file")
+def purge_file():
+    """Optional: delete a prepared file from cloud after the user saved it."""
+    client_id, err = require_client_id()
+    if err:
+        return err
+    if not is_cloud_host() and client_id == "local-pc":
+        return jsonify({"ok": True, "skipped": True})
+    data = request.get_json(silent=True) or {}
+    name = Path(data.get("name") or "").name
+    client_dir = client_dir_for(client_id).resolve()
+    path = (client_dir / name).resolve()
+    if path.parent != client_dir:
+        return jsonify({"ok": False, "error": "Invalid file"}), 400
+    safe_unlink(path)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/files")
@@ -574,6 +668,7 @@ def list_files():
         "files": files,
         "client_id": client_id,
         "is_local": client_id == "local-pc",
+        "is_cloud": is_cloud_host(),
         "folder": str(client_dir.resolve()) if client_id == "local-pc" else "",
     })
 
@@ -618,3 +713,8 @@ if __name__ == "__main__":
     print("On this PC:  " + info["local_url"])
     print("On your LAN: " + info["lan_url"])
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+
+
+# Under gunicorn (Render), start cleanup once when the app module loads.
+if is_cloud_host():
+    threading.Thread(target=cloud_cleanup_loop, daemon=True).start()

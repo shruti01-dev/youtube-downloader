@@ -293,6 +293,7 @@
 
   <script>
     const CLIENT_KEY = "yt-dl-client-id";
+    const HISTORY_KEY = "yt-dl-device-history";
     const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
 
     let mode = "single";
@@ -302,6 +303,41 @@
     let allFiles = [];
     let folderPath = "";
     let clientId = "local-pc";
+    let isCloud = !isLocalHost;
+
+    function loadDeviceHistory() {
+      try {
+        return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      } catch {
+        return [];
+      }
+    }
+
+    function saveDeviceHistory(items) {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify((items || []).slice(0, 80)));
+    }
+
+    function rememberSavedFiles(names) {
+      if (!names || !names.length) return;
+      const now = Date.now() / 1000;
+      const hist = loadDeviceHistory();
+      names.forEach((name) => {
+        hist.unshift({
+          name,
+          size: 0,
+          mtime: now,
+          savedToDevice: true,
+        });
+      });
+      const seen = new Set();
+      const unique = [];
+      hist.forEach((f) => {
+        if (seen.has(f.name)) return;
+        seen.add(f.name);
+        unique.push(f);
+      });
+      saveDeviceHistory(unique);
+    }
 
     function makeClientId() {
       if (window.crypto && crypto.randomUUID) {
@@ -335,6 +371,29 @@
       const base = "/downloads/" + encodeURIComponent(clientId) + "/" + encodeURIComponent(name);
       const cid = "client_id=" + encodeURIComponent(clientId);
       return download ? base + "?download=1&" + cid : base + "?" + cid;
+    }
+
+    function saveFileToDevice(name) {
+      const link = document.createElement("a");
+      link.href = fileUrl(name, true) + (isCloud ? "&purge=1" : "");
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    async function saveFilesToDevice(names) {
+      if (!names || !names.length) return;
+      for (let i = 0; i < names.length; i++) {
+        saveFileToDevice(names[i]);
+        if (i < names.length - 1) {
+          await new Promise((r) => setTimeout(r, 700));
+        }
+      }
+      rememberSavedFiles(names);
+      toast(names.length === 1
+        ? "Saving to your Downloads folder…"
+        : "Saving " + names.length + " files to your Downloads folder…");
     }
 
     async function initClient() {
@@ -575,13 +634,17 @@
               });
               if (!res.ok) toast("Could not open this file. Use Open folder.");
             });
+          } else if (f.savedToDevice) {
+            actionBtn.textContent = "On device";
+            actionBtn.disabled = true;
+            actionBtn.title = "Already saved to your Downloads folder";
           } else {
             actionBtn.textContent = "Save";
             actionBtn.addEventListener("click", () => {
-              const link = document.createElement("a");
-              link.href = fileUrl(f.name, true);
-              link.download = f.name;
-              link.click();
+              saveFileToDevice(f.name);
+              rememberSavedFiles([f.name]);
+              toast("Saving to your Downloads folder…");
+              setTimeout(refreshFiles, 1200);
             });
           }
           actions.append(actionBtn);
@@ -599,10 +662,20 @@
           return;
         }
         clientId = data.client_id || clientId;
-        const next = data.files || [];
+        isCloud = !!data.is_cloud || !isLocalHost;
+        const serverFiles = data.files || [];
+        let next = serverFiles;
+        if (isCloud) {
+          const hist = loadDeviceHistory();
+          const serverNames = new Set(serverFiles.map((f) => f.name));
+          const deviceOnly = hist.filter((f) => !serverNames.has(f.name));
+          next = serverFiles.concat(deviceOnly);
+          next.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        }
         const same =
           next.length === allFiles.length &&
-          next.every((f, i) => allFiles[i] && f.name === allFiles[i].name && f.size === allFiles[i].size);
+          next.length > 0 &&
+          next.every((f, i) => allFiles[i] && f.name === allFiles[i].name && f.size === allFiles[i].size && !!allFiles[i].savedToDevice === !!f.savedToDevice);
         if (same) return;
         allFiles = next;
         folderPath = data.folder || folderPath;
@@ -688,7 +761,16 @@
             clearInterval(pollTimer);
             pollTimer = null;
             go.textContent = "Download now";
-            refreshFiles();
+            await refreshFiles();
+            if (s.status === "done") {
+              const names = (s.new_files && s.new_files.length)
+                ? s.new_files
+                : (s.files || []).slice(0, 1);
+              if (!isLocalHost) {
+                await saveFilesToDevice(names);
+                setProgress("ok", "Done — check your phone/PC Downloads folder.", 100);
+              }
+            }
             updateLinkHint();
           } else if ((s.percent || 0) >= 99) {
             refreshFiles();
@@ -704,8 +786,9 @@
 
     if (!isLocalHost) {
       document.getElementById("folder").style.display = "none";
+      document.querySelector(".sub").textContent = "Paste a link — file saves to your device Downloads";
       document.querySelector(".note").textContent =
-        "Videos save as H.264 MP4. Click Save to download to your device — plays on phone and Films & TV.";
+        "Render only prepares the file briefly. When done, it downloads to YOUR phone/PC Downloads folder, then is deleted from the server.";
     }
 
     initClient().then(() => {
