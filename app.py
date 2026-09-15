@@ -305,7 +305,6 @@ def base_opts(job_id, quality, mode, client_dir):
         "continuedl": True,
         "retries": 5,
         "fragment_retries": 5,
-        "download_archive": str(client_dir / "archive.txt"),
         "keepvideo": False,
         "socket_timeout": 30,
         "sleep_interval_requests": 1.5,
@@ -313,6 +312,9 @@ def base_opts(job_id, quality, mode, client_dir):
         "max_sleep_interval": 6,
         "logger": JobLogger(job_id),
     }
+    # Cloud: no archive, so each request actually produces a file when possible.
+    if not is_cloud_host():
+        opts["download_archive"] = str(client_dir / "archive.txt")
     if FFMPEG_DIR:
         opts["ffmpeg_location"] = FFMPEG_DIR
     if quality == "audio":
@@ -391,6 +393,16 @@ def is_listable_download(filename):
     return Path(filename).suffix.lower() in FINAL_EXTENSIONS
 
 
+def listable_names(client_dir):
+    if not client_dir.is_dir():
+        return set()
+    return {
+        f.name
+        for f in client_dir.iterdir()
+        if f.is_file() and is_listable_download(f.name)
+    }
+
+
 def playlist_video_url(entry):
     if not entry:
         return None
@@ -404,11 +416,7 @@ def playlist_video_url(entry):
 
 def run_download(job_id, url, mode, quality, client_id):
     client_dir = client_dir_for(client_id)
-    before_names = {
-        f.name
-        for f in client_dir.iterdir()
-        if f.is_file() and is_listable_download(f.name)
-    }
+    before_names = listable_names(client_dir)
     try:
         if mode == "playlist":
             list_opts = {
@@ -447,10 +455,15 @@ def run_download(job_id, url, mode, quality, client_id):
                     outtmpl = str(client_dir / f"{i:03d} - %(title).80s [%(id)s].%(ext)s")
                     opts["outtmpl"] = outtmpl
                     ydl.params["outtmpl"] = {"default": outtmpl}
+                    before_video = listable_names(client_dir)
                     try:
                         ydl.download([video_url])
+                        added = listable_names(client_dir) - before_video
                         with jobs_lock:
-                            jobs[job_id]["ok_count"] += 1
+                            if added:
+                                jobs[job_id]["ok_count"] += 1
+                            else:
+                                jobs[job_id]["skipped"] += 1
                             total = jobs[job_id].get("total") or len(entries)
                             jobs[job_id]["percent"] = round((i / total) * 100, 1) if total else 100
                     except Exception as exc:
@@ -473,25 +486,31 @@ def run_download(job_id, url, mode, quality, client_id):
                     jobs[job_id]["status"] = "downloading"
                     jobs[job_id]["message"] = "Downloading video…"
                 ydl.download([url])
-                with jobs_lock:
-                    jobs[job_id]["ok_count"] += 1
 
+        new_files = sorted(
+            listable_names(client_dir) - before_names,
+            key=lambda n: (client_dir / n).stat().st_mtime,
+            reverse=True,
+        )
+        listed = sorted(
+            listable_names(client_dir),
+            key=lambda n: (client_dir / n).stat().st_mtime,
+            reverse=True,
+        )
         with jobs_lock:
             job = jobs[job_id]
-            job["status"] = "done"
-            job["percent"] = 100
-            skipped = job.get("skipped") or 0
-            ok_count = job.get("ok_count") or 0
-            job["message"] = f"Finished. Saved {ok_count} file(s), skipped {skipped}."
-            listed = [
-                f.name
-                for f in client_dir.iterdir()
-                if f.is_file() and is_listable_download(f.name)
-            ]
-            listed.sort(key=lambda n: (client_dir / n).stat().st_mtime, reverse=True)
             job["files"] = listed[:40]
-            new_files = [n for n in listed if n not in before_names]
-            job["new_files"] = new_files or (listed[:1] if ok_count else [])
+            job["new_files"] = new_files
+            job["ok_count"] = len(new_files)
+            job["percent"] = 100
+            if new_files:
+                job["status"] = "done"
+                job["message"] = f"Finished. Saved {len(new_files)} file(s)."
+            else:
+                job["status"] = "error"
+                job["message"] = (
+                    "No video file was created. Try 720p, or try again in a few minutes."
+                )
     except Exception as exc:
         err = str(exc)
         with jobs_lock:
@@ -500,7 +519,7 @@ def run_download(job_id, url, mode, quality, client_id):
             if "rate-limited" in err.lower() or "try again later" in err.lower():
                 jobs[job_id]["message"] = (
                     "YouTube blocked too many requests from this IP (about 1 hour). "
-                    "Wait, then try again. Already-saved videos will be skipped."
+                    "Wait, then try again."
                 )
             else:
                 jobs[job_id]["message"] = "Download failed"

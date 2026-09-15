@@ -373,27 +373,34 @@
       return download ? base + "?download=1&" + cid : base + "?" + cid;
     }
 
-    function saveFileToDevice(name) {
+    async function saveFileToDevice(name) {
+      const res = await fetch(fileUrl(name, true) + (isCloud ? "&purge=1" : ""), {
+        headers: apiHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error("Could not download file (" + res.status + ")");
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = fileUrl(name, true) + (isCloud ? "&purge=1" : "");
+      link.href = objectUrl;
       link.download = name;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
     }
 
     async function saveFilesToDevice(names) {
-      if (!names || !names.length) return;
+      if (!names || !names.length) return false;
       for (let i = 0; i < names.length; i++) {
-        saveFileToDevice(names[i]);
+        await saveFileToDevice(names[i]);
         if (i < names.length - 1) {
-          await new Promise((r) => setTimeout(r, 700));
+          await new Promise((r) => setTimeout(r, 400));
         }
       }
       rememberSavedFiles(names);
-      toast(names.length === 1
-        ? "Saving to your Downloads folder…"
-        : "Saving " + names.length + " files to your Downloads folder…");
+      return true;
     }
 
     async function initClient() {
@@ -767,8 +774,17 @@
                 ? s.new_files
                 : (s.files || []).slice(0, 1);
               if (!isLocalHost) {
-                await saveFilesToDevice(names);
-                setProgress("ok", "Done — check your phone/PC Downloads folder.", 100);
+                if (!names.length) {
+                  setProgress("err", "No video file was created. Try 720p.", 0);
+                } else {
+                  try {
+                    await saveFilesToDevice(names);
+                    setProgress("ok", "Saved to your Downloads folder.", 100);
+                    await refreshFiles();
+                  } catch (e) {
+                    setProgress("err", "Could not save to your device. Try again.", 0);
+                  }
+                }
               }
             }
             updateLinkHint();
@@ -786,9 +802,6 @@
 
     if (!isLocalHost) {
       document.getElementById("folder").style.display = "none";
-      document.querySelector(".sub").textContent = "Paste a link — file saves to your device Downloads";
-      document.querySelector(".note").textContent =
-        "Render only prepares the file briefly. When done, it downloads to YOUR phone/PC Downloads folder, then is deleted from the server.";
     }
 
     initClient().then(() => {
