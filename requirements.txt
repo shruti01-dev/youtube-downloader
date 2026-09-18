@@ -1,3 +1,5 @@
 flask>=3.0.0
-yt-dlp>=2025.9.5
-gunicorn>=22.0.0
+yt-dlp[default]>=2025.9.5
+imageio-ffmpeg>=0.5.1
+pywebview>=5.0
+pyinstaller>=6.0

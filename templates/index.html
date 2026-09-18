@@ -212,6 +212,42 @@
       padding: 12px 16px; border-radius: 12px;
       display: none; z-index: 20; max-width: 320px;
     }
+    .player {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.78);
+      z-index: 40;
+      place-items: center;
+      padding: 24px;
+    }
+    .player.show { display: grid; }
+    .player-box {
+      width: min(960px, 100%);
+      background: #0b1220;
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .player-box video { width: 100%; max-height: 78vh; background: #000; display: block; }
+    .player-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: #111827;
+      color: #fff;
+    }
+    .player-bar span { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .player-bar button {
+      border: 0;
+      background: #fff;
+      color: #111827;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       .top { flex-direction: column; align-items: flex-start; }
@@ -224,7 +260,7 @@
       <div class="logo">▶</div>
       <div>
         <h1>YouTube Downloader</h1>
-        <p class="sub">Paste a link and download to this PC</p>
+        <p class="sub">Paste a link. Files save in your Downloads folder</p>
       </div>
     </div>
     <button class="btn ghost" id="folder" type="button">Open folder</button>
@@ -271,7 +307,7 @@
         <div class="bar"><i id="bar"></i></div>
         <p class="status" id="status">Starting…</p>
       </div>
-      <p class="note">Videos save as H.264 MP4 — plays in Films &amp; TV, phone, and browser.</p>
+      <p class="note">After download, the video plays in this app (like YouTube). This PC is Windows N, so Photos cannot play files from the Downloads folder.</p>
     </section>
 
     <section class="card">
@@ -290,6 +326,15 @@
   </main>
 
   <div class="toast" id="toast"></div>
+  <div class="player" id="player">
+    <div class="player-box">
+      <div class="player-bar">
+        <span id="playerTitle">Playing</span>
+        <button type="button" id="playerClose">Close</button>
+      </div>
+      <video id="playerVideo" controls playsinline></video>
+    </div>
+  </div>
 
   <script>
     const CLIENT_KEY = "yt-dl-client-id";
@@ -371,6 +416,42 @@
       const base = "/downloads/" + encodeURIComponent(clientId) + "/" + encodeURIComponent(name);
       const cid = "client_id=" + encodeURIComponent(clientId);
       return download ? base + "?download=1&" + cid : base + "?" + cid;
+    }
+
+    function playInApp(name) {
+      const player = document.getElementById("player");
+      const video = document.getElementById("playerVideo");
+      const lower = (name || "").toLowerCase();
+      document.getElementById("playerTitle").textContent = name;
+      video.onerror = () => {
+        fetch("/api/open-file", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ name }),
+        });
+      };
+      video.src = fileUrl(name, false);
+      if (lower.endsWith(".mp4")) video.setAttribute("type", "video/mp4");
+      player.classList.add("show");
+      const playPromise = video.play();
+      if (playPromise && playPromise.catch) {
+        playPromise.catch(() => {
+          fetch("/api/open-file", {
+            method: "POST",
+            headers: apiHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ name }),
+          });
+        });
+      }
+    }
+
+    function closePlayer() {
+      const player = document.getElementById("player");
+      const video = document.getElementById("playerVideo");
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      player.classList.remove("show");
     }
 
     async function saveFileToDevice(name) {
@@ -632,19 +713,25 @@
           const actionBtn = document.createElement("button");
           actionBtn.type = "button";
           if (isLocalHost) {
-            actionBtn.textContent = "Open";
+            const playBtn = document.createElement("button");
+            playBtn.type = "button";
+            playBtn.textContent = "Play";
+            playBtn.addEventListener("click", () => playInApp(f.name));
+            actionBtn.textContent = "Open in Chrome";
             actionBtn.addEventListener("click", async () => {
               const res = await fetch("/api/open-file", {
                 method: "POST",
                 headers: apiHeaders({ "Content-Type": "application/json" }),
                 body: JSON.stringify({ name: f.name }),
               });
-              if (!res.ok) toast("Could not open this file. Use Open folder.");
+              if (!res.ok) toast("Could not open this file. Use Play in this app.");
             });
+            actions.append(playBtn, actionBtn);
           } else if (f.savedToDevice) {
             actionBtn.textContent = "On device";
             actionBtn.disabled = true;
             actionBtn.title = "Already saved to your Downloads folder";
+            actions.append(actionBtn);
           } else {
             actionBtn.textContent = "Save";
             actionBtn.addEventListener("click", () => {
@@ -653,8 +740,8 @@
               toast("Saving to your Downloads folder…");
               setTimeout(refreshFiles, 1200);
             });
+            actions.append(actionBtn);
           }
-          actions.append(actionBtn);
           row.append(info, actions);
           box.appendChild(row);
         });
@@ -698,7 +785,7 @@
     document.getElementById("folder").addEventListener("click", async () => {
       const res = await fetch("/api/open-folder", { method: "POST", headers: apiHeaders() });
       if (!res.ok) {
-        toast("Folder: " + (folderPath || "Desktop\\download youtube video\\downloads"));
+        toast("Folder: " + (folderPath || "Downloads"));
         return;
       }
       toast("Folder opened in Explorer");
@@ -785,6 +872,10 @@
                     setProgress("err", "Could not save to your device. Try again.", 0);
                   }
                 }
+              } else if (names.length) {
+                const playName = names.find((n) => /\.(mp4|mp3)$/i.test(n)) || names[0];
+                setProgress("ok", "Saved. Playing now…", 100);
+                playInApp(playName);
               }
             }
             updateLinkHint();
@@ -798,6 +889,11 @@
           updateLinkHint();
         }
       }, 1000);
+    });
+
+    document.getElementById("playerClose").addEventListener("click", closePlayer);
+    document.getElementById("player").addEventListener("click", (e) => {
+      if (e.target.id === "player") closePlayer();
     });
 
     if (!isLocalHost) {

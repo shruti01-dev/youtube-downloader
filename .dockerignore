@@ -1,7 +1,0 @@
-downloads/
-tools/
-__pycache__/
-*.pyc
-.git/
-start.bat
-add-firewall.bat

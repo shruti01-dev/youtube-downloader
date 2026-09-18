@@ -4,6 +4,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -14,18 +15,75 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from flask import Flask, after_this_request, abort, jsonify, request, send_from_directory
 from yt_dlp import YoutubeDL
 
-ROOT = Path(__file__).resolve().parent
-DOWNLOAD_DIR = ROOT / "downloads"
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-CLIENTS_DIR = DOWNLOAD_DIR / "clients"
-CLIENTS_DIR.mkdir(exist_ok=True)
+
+def resource_root():
+    """Bundled files (templates) — inside the .exe extract folder when frozen."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+def app_data_root():
+    """Writable folder next to the .exe (or project folder in dev)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+RESOURCE_ROOT = resource_root()
+ROOT = app_data_root()
 PORT = int(os.environ.get("PORT", "5050"))
 CLIENT_ID_RE = re.compile(r"^[a-f0-9-]{36}$", re.I)
+OUR_FILE_RE = re.compile(
+    r"(?:\[([A-Za-z0-9_-]{11})\]|-([A-Za-z0-9_-]{11}))\.(mp4|mp3)$",
+    re.I,
+)
 # On free cloud hosts, keep files only briefly then send to the user device.
 CLOUD_FILE_TTL_SEC = int(os.environ.get("CLOUD_FILE_TTL_SEC", "900"))
 
+
+def windows_downloads_dir():
+    """Real Windows Downloads folder, not a folder inside this project."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        ) as key:
+            path = winreg.QueryValueEx(key, "{374DE290-123F-4565-9164-39C4925E467B}")[0]
+            if path:
+                folder = Path(path)
+                if folder.is_dir():
+                    return folder
+    except OSError:
+        pass
+    folder = Path.home() / "Downloads"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def state_dir():
+    """Internal files (archive). Keep these out of the user's Downloads folder."""
+    folder = ROOT / ".appdata"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+DOWNLOAD_DIR = windows_downloads_dir() if os.name == "nt" and not bool(
+    os.environ.get("RENDER")
+    or os.environ.get("RAILWAY_ENVIRONMENT")
+    or os.environ.get("FLY_APP_NAME")
+    or os.environ.get("KOYEB_APP_ID")
+) else (ROOT / "downloads")
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR = state_dir()
+CLIENTS_DIR = STATE_DIR / "clients"
+CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+
 FFMPEG_CANDIDATES = [
     ROOT / "tools",
+    RESOURCE_ROOT / "tools",
     Path(os.environ.get("LOCALAPPDATA", ""))
     / "Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-9.0.1-full_build/bin",
     Path(r"C:\ffmpeg\bin"),
@@ -39,7 +97,128 @@ def find_ffmpeg():
     found = shutil.which("ffmpeg")
     if found:
         return str(Path(found).parent)
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and Path(exe).is_file():
+            return str(Path(exe).parent)
+    except Exception:
+        pass
     return None
+
+
+def ffmpeg_bin():
+    if FFMPEG_DIR:
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            path = Path(FFMPEG_DIR) / name
+            if path.is_file():
+                return str(path)
+    return shutil.which("ffmpeg")
+
+
+def is_windows_n():
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+        ) as key:
+            edition = str(winreg.QueryValueEx(key, "EditionID")[0] or "")
+            return edition.upper().endswith("N")
+    except OSError:
+        return False
+
+
+def make_playable_mp4(path):
+    """Re-encode to H.264 Main + AAC when Windows can use Photos/Films & TV."""
+    src = Path(path)
+    if src.suffix.lower() != ".mp4" or not src.is_file():
+        return src
+    # Windows N has no media codecs. Re-encoding will not make Photos play, and
+    # leftover .tmp.mp4 files in Downloads look broken if opened mid-convert.
+    if is_windows_n():
+        return src
+    exe = ffmpeg_bin()
+    if not exe:
+        return src
+    tmp = STATE_DIR / (src.stem + ".tmp.mp4")
+    cmd = [
+        exe, "-y", "-i", str(src),
+        "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
+        "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+        "-movflags", "+faststart", "-f", "mp4", str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        if tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(src)
+    except (OSError, subprocess.CalledProcessError):
+        safe_unlink(tmp)
+    safe_unlink(tmp)
+    return src
+
+
+def open_with_player(path):
+    """Windows N has no Media Player/Photos codecs. Open in Chrome/Edge instead."""
+    path = Path(path)
+    if os.name == "nt" and path.suffix.lower() in {".mp4", ".mp3", ".m4a", ".webm"}:
+        browsers = []
+        for base in (
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ):
+            browsers.extend([
+                Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ])
+        for browser in browsers:
+            if browser.is_file():
+                subprocess.Popen([str(browser), path.resolve().as_uri()], shell=False)
+                return
+        for base in (
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ):
+            player = Path(base) / "Windows Media Player" / "wmplayer.exe"
+            if player.is_file():
+                subprocess.Popen([str(player), str(path)], shell=False)
+                return
+    os.startfile(path)
+
+
+def find_cookies_file():
+    """Optional YouTube cookies for cloud hosts blocked by bot checks."""
+    candidates = [
+        os.environ.get("COOKIES_FILE", "").strip(),
+        "/etc/secrets/cookies.txt",
+        str(ROOT / "cookies.txt"),
+        str(RESOURCE_ROOT / "cookies.txt"),
+    ]
+    for item in candidates:
+        if not item:
+            continue
+        path = Path(item)
+        if path.is_file() and path.stat().st_size > 0:
+            return str(path)
+    return None
+
+
+def friendly_ytdlp_error(text):
+    lower = (text or "").lower()
+    if "sign in to confirm" in lower or "not a bot" in lower or "cookies" in lower:
+        return "YouTube blocked this download (bot check). Wait a bit, then try again."
+    if "rate-limited" in lower or "try again later" in lower:
+        return "YouTube rate-limited this IP. Wait a while, then try again."
+    if "requested format is not available" in lower:
+        return "Could not get a playable MP4 for this video. Try 720p or another link."
+    if "ffmpeg" in lower:
+        return "Could not finish the MP4 file. Close the app, open it again, and retry."
+    return (text or "Download failed")[:200]
 
 
 FFMPEG_DIR = find_ffmpeg()
@@ -67,15 +246,16 @@ def cors_preflight(_path=None):
     return "", 204
 
 def h264_format(max_height=None):
-    """Prefer H.264 MP4; progressive single-file first (more reliable on cloud)."""
+    """Prefer H.264 + AAC so the file plays on Windows, phones, and TVs."""
     h = f"[height<={max_height}]" if max_height else ""
     return (
-        f"best{h}[ext=mp4][vcodec^=avc1]/"
-        f"best{h}[ext=mp4]/"
-        f"bestvideo{h}[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
+        f"bestvideo{h}[vcodec^=avc1]+bestaudio[ext=m4a]/"
         f"bestvideo{h}[vcodec^=avc1]+bestaudio/"
+        f"best{h}[ext=mp4][vcodec^=avc1]/"
         f"best{h}[vcodec^=avc1]/"
-        f"bestvideo{h}+bestaudio/best{h}/best"
+        f"best{h}[ext=mp4]/"
+        f"bestvideo{h}[vcodec!*=av01][vcodec!*=vp9]+bestaudio/"
+        f"best{h}/best"
     )
 
 
@@ -134,7 +314,7 @@ class JobLogger:
                 job["skipped"] += 1
                 job["message"] = "Skipping unavailable video…"
             else:
-                job["message"] = text[:180]
+                job["message"] = friendly_ytdlp_error(text)
 
 
 def is_cloud_host():
@@ -241,9 +421,9 @@ def list_client_files(client_dir):
         try:
             stat = f.stat()
             entry = {"name": f.name, "size": stat.st_size, "mtime": stat.st_mtime}
-            vid_match = re.search(r"\[([^\]]+)\]\.", f.name)
+            vid_match = OUR_FILE_RE.search(f.name)
             if vid_match:
-                vid = vid_match.group(1)
+                vid = vid_match.group(1) or vid_match.group(2)
                 prev = seen_ids.get(vid)
                 if prev and (prev["mtime"] > entry["mtime"] or prev["size"] >= entry["size"]):
                     continue
@@ -291,9 +471,9 @@ def progress_hook(job_id):
 def base_opts(job_id, quality, mode, client_dir):
     fmt = QUALITY_MAP.get(quality, QUALITY_MAP["best"])
     name = (
-        "%(playlist_index)03d - %(title).80s [%(id)s].%(ext)s"
+        "%(playlist_index)03d - %(title).80s-%(id)s.%(ext)s"
         if mode == "playlist"
-        else "%(title).80s [%(id)s].%(ext)s"
+        else "%(title).80s-%(id)s.%(ext)s"
     )
     opts = {
         "format": fmt,
@@ -305,7 +485,7 @@ def base_opts(job_id, quality, mode, client_dir):
         "ignoreerrors": mode == "playlist",
         "noprogress": True,
         "restrictfilenames": True,
-        "windowsfilenames": False,
+        "windowsfilenames": True,
         "continuedl": True,
         "retries": 10,
         "fragment_retries": 10,
@@ -320,23 +500,21 @@ def base_opts(job_id, quality, mode, client_dir):
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
         },
-        # Helps when YouTube blocks default web clients on cloud IPs.
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "tv_embedded", "mweb", "web"],
-            }
-        },
     }
     # Cloud: no archive, so each request actually produces a file when possible.
     if not is_cloud_host():
-        opts["download_archive"] = str(client_dir / "archive.txt")
-        opts["sleep_interval"] = 2
-        opts["max_sleep_interval"] = 6
+        opts["download_archive"] = str(STATE_DIR / "archive.txt")
+        if mode == "playlist":
+            opts["sleep_interval"] = 2
+            opts["max_sleep_interval"] = 6
     if FFMPEG_DIR:
         opts["ffmpeg_location"] = FFMPEG_DIR
-    # Prefer system ffmpeg on Linux cloud images.
     elif shutil.which("ffmpeg"):
         opts["ffmpeg_location"] = str(Path(shutil.which("ffmpeg")).parent)
+    cookies = find_cookies_file()
+    if cookies:
+        opts["cookiefile"] = cookies
+    have_ffmpeg = bool(opts.get("ffmpeg_location") or shutil.which("ffmpeg"))
     if quality == "audio":
         opts["postprocessors"] = [
             {
@@ -345,9 +523,13 @@ def base_opts(job_id, quality, mode, client_dir):
                 "preferredquality": "192",
             }
         ]
-    else:
+    elif have_ffmpeg:
+        opts["postprocessors"] = [
+            {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"},
+        ]
         opts["postprocessor_args"] = {
             "Merger+ffmpeg": ["-movflags", "+faststart"],
+            "VideoRemuxer+ffmpeg": ["-movflags", "+faststart"],
         }
     return opts
 
@@ -400,7 +582,7 @@ def validate_link_mode(url, mode):
 
 
 INTERMEDIATE_FILE_RE = re.compile(r"\.f\d+\.|\.part\.|\.ytdl|\.temp\.|\.frag\.", re.I)
-FINAL_EXTENSIONS = {".mp4", ".mp3", ".webm", ".mkv", ".m4a", ".opus"}
+FINAL_EXTENSIONS = {".mp4", ".mp3"}
 
 
 def is_listable_download(filename):
@@ -410,7 +592,10 @@ def is_listable_download(filename):
         return False
     if INTERMEDIATE_FILE_RE.search(filename):
         return False
-    return Path(filename).suffix.lower() in FINAL_EXTENSIONS
+    if Path(filename).suffix.lower() not in FINAL_EXTENSIONS:
+        return False
+    # Only show this app's files, not everything in the user's Downloads folder.
+    return bool(OUR_FILE_RE.search(filename))
 
 
 def listable_names(client_dir):
@@ -472,7 +657,7 @@ def run_download(job_id, url, mode, quality, client_id):
                         total = job.get("total") or len(entries)
                         job["percent"] = round(((i - 1) / total) * 100, 1) if total else 0
                         job["message"] = f"Video {i}/{total}: {entry.get('title') or video_url}"
-                    outtmpl = str(client_dir / f"{i:03d} - %(title).80s [%(id)s].%(ext)s")
+                    outtmpl = str(client_dir / f"{i:03d} - %(title).80s-%(id)s.%(ext)s")
                     opts["outtmpl"] = outtmpl
                     ydl.params["outtmpl"] = {"default": outtmpl}
                     before_video = listable_names(client_dir)
@@ -513,6 +698,17 @@ def run_download(job_id, url, mode, quality, client_id):
             key=lambda n: (client_dir / n).stat().st_mtime,
             reverse=True,
         )
+        if quality != "audio":
+            with jobs_lock:
+                jobs[job_id]["message"] = "Making a Windows-playable MP4…"
+            playable = []
+            for name in new_files:
+                src = client_dir / name
+                if src.suffix.lower() == ".mp4":
+                    make_playable_mp4(src)
+                if src.is_file() and is_listable_download(src.name):
+                    playable.append(src.name)
+            new_files = playable or new_files
         listed = sorted(
             listable_names(client_dir),
             key=lambda n: (client_dir / n).stat().st_mtime,
@@ -526,29 +722,20 @@ def run_download(job_id, url, mode, quality, client_id):
             job["percent"] = 100
             if new_files:
                 job["status"] = "done"
-                job["message"] = f"Finished. Saved {len(new_files)} file(s)."
+                job["message"] = f"Finished. Saved {len(new_files)} file(s) to Downloads."
+            elif not (job.get("error") or "").strip():
+                job["status"] = "done"
+                job["message"] = "Already saved in your Downloads folder."
             else:
                 job["status"] = "error"
                 detail = (job.get("error") or job.get("message") or "").strip()
-                if detail and detail not in ("Downloading video…", "Starting…", "Merging / finishing file…"):
-                    job["message"] = detail[:200]
-                else:
-                    job["message"] = (
-                        "YouTube blocked this server IP or no playable format was found. "
-                        "Free cloud hosts often fail — use your PC (python app.py) for reliable downloads."
-                    )
+                job["message"] = friendly_ytdlp_error(detail)
     except Exception as exc:
         err = str(exc)
         with jobs_lock:
             jobs[job_id]["status"] = "error"
             jobs[job_id]["error"] = err
-            if "rate-limited" in err.lower() or "try again later" in err.lower():
-                jobs[job_id]["message"] = (
-                    "YouTube blocked too many requests from this IP (about 1 hour). "
-                    "Wait, then try again."
-                )
-            else:
-                jobs[job_id]["message"] = err[:200] or "Download failed"
+            jobs[job_id]["message"] = friendly_ytdlp_error(err)
 
 
 def get_lan_ip():
@@ -574,7 +761,7 @@ def network_info():
 
 @app.get("/")
 def index():
-    html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (RESOURCE_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     resp = app.make_response(html)
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -680,7 +867,13 @@ def get_file(client_id, filename):
                 safe_unlink(path)
             return response
 
-    return send_from_directory(client_dir, safe_name, as_attachment=as_attachment)
+    return send_from_directory(
+        client_dir,
+        safe_name,
+        as_attachment=as_attachment,
+        mimetype="video/mp4" if path.suffix.lower() == ".mp4" else None,
+        conditional=True,
+    )
 
 
 @app.post("/api/purge-file")
@@ -733,7 +926,7 @@ def open_file():
         return jsonify({"ok": False, "error": "File not found"}), 404
     if os.name != "nt":
         return jsonify({"ok": False, "error": "Use Save to download the file."}), 403
-    os.startfile(path)
+    open_with_player(path)
     return jsonify({"ok": True})
 
 

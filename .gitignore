@@ -1,7 +1,13 @@
 tools/
 downloads/
+.appdata/
 __pycache__/
 *.pyc
 .env
 .env.*
 *.log
+cookies.txt
+build/
+dist/
+installer_output/
+*.spec.bak
