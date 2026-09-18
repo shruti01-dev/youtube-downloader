@@ -27,5 +27,5 @@ if "%ISCC%"=="" (
 echo.
 echo Installer: installer_output\YouTube-Downloader-Setup.exe
 echo Users can install this like a normal Windows app.
-echo Downloaded videos save in the PC Downloads folder.
+echo Downloaded videos save in Downloads\YouTube Downloader.
 endlocal

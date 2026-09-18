@@ -70,12 +70,17 @@ def state_dir():
     return folder
 
 
-DOWNLOAD_DIR = windows_downloads_dir() if os.name == "nt" and not bool(
-    os.environ.get("RENDER")
-    or os.environ.get("RAILWAY_ENVIRONMENT")
-    or os.environ.get("FLY_APP_NAME")
-    or os.environ.get("KOYEB_APP_ID")
-) else (ROOT / "downloads")
+DOWNLOAD_DIR = (
+    (windows_downloads_dir() / "YouTube Downloader")
+    if os.name == "nt"
+    and not bool(
+        os.environ.get("RENDER")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("FLY_APP_NAME")
+        or os.environ.get("KOYEB_APP_ID")
+    )
+    else (ROOT / "downloads")
+)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR = state_dir()
 CLIENTS_DIR = STATE_DIR / "clients"
@@ -211,14 +216,29 @@ def find_cookies_file():
 def friendly_ytdlp_error(text):
     lower = (text or "").lower()
     if "sign in to confirm" in lower or "not a bot" in lower or "cookies" in lower:
-        return "YouTube blocked this download (bot check). Wait a bit, then try again."
+        return "YouTube blocked this download (bot check). Wait a bit, then try another link."
     if "rate-limited" in lower or "try again later" in lower:
         return "YouTube rate-limited this IP. Wait a while, then try again."
+    if "page needs to be reloaded" in lower:
+        return "YouTube blocked this request. Wait a few seconds, then try the same link again."
+    if "video is not available" in lower or "video unavailable" in lower or "this video is unavailable" in lower:
+        return (
+            "YouTube says this video is not available. "
+            "It may be private, removed, region-blocked, or the link is incomplete. "
+            "Open the video in Chrome first, then paste that full link."
+        )
+    if "private video" in lower:
+        return "This video is private, so it cannot be downloaded."
+    if "members only" in lower or "members-only" in lower:
+        return "This video is members-only, so it cannot be downloaded."
+    if "age" in lower and "restrict" in lower:
+        return "This video is age-restricted, so it cannot be downloaded on this PC."
     if "requested format is not available" in lower:
         return "Could not get a playable MP4 for this video. Try 720p or another link."
     if "ffmpeg" in lower:
         return "Could not finish the MP4 file. Close the app, open it again, and retry."
-    return (text or "Download failed")[:200]
+    clean = re.sub(r"^ERROR:\s*(\[youtube\]\s*)?", "", text or "", flags=re.I).strip()
+    return (clean or "Download failed")[:200]
 
 
 FFMPEG_DIR = find_ffmpeg()
@@ -501,12 +521,9 @@ def base_opts(job_id, quality, mode, client_dir):
             ),
         },
     }
-    # Cloud: no archive, so each request actually produces a file when possible.
-    if not is_cloud_host():
-        opts["download_archive"] = str(STATE_DIR / "archive.txt")
-        if mode == "playlist":
-            opts["sleep_interval"] = 2
-            opts["max_sleep_interval"] = 6
+    if mode == "playlist":
+        opts["sleep_interval"] = 2
+        opts["max_sleep_interval"] = 6
     if FFMPEG_DIR:
         opts["ffmpeg_location"] = FFMPEG_DIR
     elif shutil.which("ffmpeg"):
@@ -532,6 +549,31 @@ def base_opts(job_id, quality, mode, client_dir):
             "VideoRemuxer+ffmpeg": ["-movflags", "+faststart"],
         }
     return opts
+
+
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def clean_youtube_url(url):
+    """Fix paste issues (like German ß) and keep a normal YouTube link."""
+    text = (url or "").strip().replace("ß", "ss").replace("ẞ", "SS")
+    parsed = urlparse(text)
+    host = (parsed.netloc or "").lower()
+    qs = parse_qs(parsed.query)
+    playlist = (qs.get("list") or [""])[0]
+    vid = ""
+    if "youtu.be" in host:
+        vid = parsed.path.strip("/").split("/")[0]
+    else:
+        vid = (qs.get("v") or [""])[0]
+    if VIDEO_ID_RE.match(vid):
+        out = f"https://www.youtube.com/watch?v={vid}"
+        if playlist:
+            out += f"&list={playlist}"
+        return out
+    if playlist and "youtube" in host:
+        return f"https://www.youtube.com/playlist?list={playlist}"
+    return text
 
 
 def force_single_video_url(url):
@@ -675,7 +717,7 @@ def run_download(job_id, url, mode, quality, client_id):
                         err = str(exc)
                         with jobs_lock:
                             jobs[job_id]["skipped"] += 1
-                            jobs[job_id]["message"] = err[:180]
+                            jobs[job_id]["message"] = friendly_ytdlp_error(err)
                         if "rate-limited" in err.lower() or "try again later" in err.lower():
                             wait = 90
                             with jobs_lock:
@@ -800,7 +842,7 @@ def start_download():
         return err
 
     data = request.get_json(silent=True) or {}
-    url = (data.get("url") or "").strip()
+    url = clean_youtube_url((data.get("url") or "").strip())
     mode = data.get("mode") or "single"
     quality = data.get("quality") or "best"
     if not re.search(r"youtube\.com|youtu\.be", url, re.I):
@@ -817,6 +859,12 @@ def start_download():
     job_id = os.urandom(8).hex()
     if mode == "single":
         url = force_single_video_url(url)
+        vid = (parse_qs(urlparse(url).query).get("v") or [""])[0]
+        if not VIDEO_ID_RE.match(vid):
+            return jsonify({
+                "ok": False,
+                "error": "This YouTube link looks incomplete. Open the video in Chrome, copy the full link, and paste it again.",
+            }), 400
     with jobs_lock:
         jobs[job_id] = new_job(client_id)
     threading.Thread(

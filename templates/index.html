@@ -260,7 +260,7 @@
       <div class="logo">▶</div>
       <div>
         <h1>YouTube Downloader</h1>
-        <p class="sub">Paste a link. Files save in your Downloads folder</p>
+        <p class="sub">Paste a link. New downloads save in Downloads\YouTube Downloader</p>
       </div>
     </div>
     <button class="btn ghost" id="folder" type="button">Open folder</button>
@@ -307,7 +307,7 @@
         <div class="bar"><i id="bar"></i></div>
         <p class="status" id="status">Starting…</p>
       </div>
-      <p class="note">After download, the video plays in this app (like YouTube). This PC is Windows N, so Photos cannot play files from the Downloads folder.</p>
+      <p class="note">Only videos you download in this app appear here. After download, the video plays in this app. Some YouTube videos cannot be downloaded if they are private, removed, or blocked in your region.</p>
     </section>
 
     <section class="card">
@@ -515,6 +515,10 @@
       return n + " B";
     }
 
+    function sanitizeYoutubeUrl(raw) {
+      return (raw || "").trim().replace(/ß/g, "ss").replace(/ẞ/g, "SS");
+    }
+
     function hasVideoId(url) {
       if (/youtu\.be\//i.test(url)) return true;
       return /[?&]v=/.test(url);
@@ -551,7 +555,7 @@
     function updateDownloadButton() {
       const go = document.getElementById("go");
       if (pollTimer) return;
-      const url = document.getElementById("url").value.trim();
+      const url = sanitizeYoutubeUrl(document.getElementById("url").value);
       if (!url) {
         go.disabled = true;
         return;
@@ -560,7 +564,7 @@
     }
 
     function updateLinkHint() {
-      const url = document.getElementById("url").value.trim();
+      const url = sanitizeYoutubeUrl(document.getElementById("url").value);
       const hint = document.getElementById("linkHint");
       if (!url) {
         hint.textContent = "Paste a link to check if it matches your selection.";
@@ -596,12 +600,17 @@
       });
     });
 
-    document.getElementById("url").addEventListener("input", updateLinkHint);
+    document.getElementById("url").addEventListener("input", () => {
+      const el = document.getElementById("url");
+      const cleaned = sanitizeYoutubeUrl(el.value);
+      if (cleaned !== el.value) el.value = cleaned;
+      updateLinkHint();
+    });
 
     document.getElementById("paste").addEventListener("click", async () => {
       try {
         const text = await navigator.clipboard.readText();
-        document.getElementById("url").value = text.trim();
+        document.getElementById("url").value = sanitizeYoutubeUrl(text);
         updateLinkHint();
         toast("Link pasted");
       } catch {
@@ -802,7 +811,8 @@
     }
 
     document.getElementById("go").addEventListener("click", async () => {
-      const url = document.getElementById("url").value.trim();
+      const url = sanitizeYoutubeUrl(document.getElementById("url").value);
+      document.getElementById("url").value = url;
       const go = document.getElementById("go");
       if (!url) {
         toast("Please paste a YouTube link first.");
@@ -866,7 +876,7 @@
                 } else {
                   try {
                     await saveFilesToDevice(names);
-                    setProgress("ok", "Saved to your Downloads folder.", 100);
+                    setProgress("ok", "Saved to Downloads\\YouTube Downloader.", 100);
                     await refreshFiles();
                   } catch (e) {
                     setProgress("err", "Could not save to your device. Try again.", 0);

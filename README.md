@@ -13,7 +13,7 @@ Desktop app to download YouTube videos and playlists.
 3. Open **YouTube Downloader** from the desktop
 4. Paste a YouTube link and download
 
-Videos save in the PC **Downloads** folder as H.264 MP4.
+Videos save in **Downloads\YouTube Downloader** as H.264 MP4. Only files from this app appear in the in-app list.
 
 ### Mac
 
